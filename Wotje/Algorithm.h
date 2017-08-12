@@ -290,5 +290,4 @@ void Msolver(double *A, double *b, const int n, const int nrhs = 1);
 void Msolver(float *A, float *b, const int n, const int nrhs = 1);
 
 
-
 #endif // !Algorithm_h

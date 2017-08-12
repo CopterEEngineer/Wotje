@@ -40,6 +40,8 @@ typedef double myTYPE; //float //
 #include <string>
 #include "mkl.h"
 #include "mkl_vml.h"
+#include <omp.h>
+
 #include "Algorithm.h"
 
 
@@ -3139,7 +3141,884 @@ public:
 
 
 
+template<class Type> class SpMtrx {
+	Type aa = 0;//用于()重载的时候返回零元素地址，防止野指针
+public:
+	Type *v;
+	int *ia, *ja; // 行偏移, 列编号，均从1开始计数
 
+	//稀疏矩阵的类型：
+	//0（默认）对称稀疏矩阵，只存储右上半
+	//1 非对称矩阵存储全部
+	//在做矩阵乘以向量和求解线性方程组的时候是要区别对待
+	//其余时候，特别是（）取值操作时一样对待，
+	//也就是说，对于SpMtxType = 0的对称矩阵，当取(I,J)时，若I>J则返回0，并不会取（J,I）的值
+	int SpMtxType = 0;
+
+
+	int Nv, N; // 元素总数，行数
+
+
+	SpMtrx() {
+		Nv = 0;
+		N = 0;
+		ia = new int[0];
+		ja = new int[0];
+		v = new Type[0];
+	};
+
+	SpMtrx(int n, int nv) {
+		Nv = nv;
+		N = n;
+		ia = new int[N + 1];
+		ja = new int[Nv];
+		v = new Type[Nv];
+	}
+
+	SpMtrx(const SpMtrx<Type> &A) {
+		Nv = A.Nv;
+		N = A.N;
+		ia = new int[N + 1];
+		ja = new int[Nv];
+		v = new Type[Nv];
+		for (int i = 0; i < Nv; i++) {
+			v[i] = A.v[i];
+			ja[i] = A.ja[i];
+		}
+		for (int i = 0; i < N + 1; i++) {
+			ia[i] = A.ia[i];
+		}
+	}
+
+	~SpMtrx() {
+		Nv = 0;
+		N = 0;
+		delete[] ia, ja, v;
+	};
+
+	void allocate(int n, int nv) {
+		delete[] ia, ja, v;
+		Nv = nv;
+		N = n;
+		ja = new int[Nv];
+		v = new Type[Nv];
+		ia = new int[N + 1];
+
+	}
+
+	void allocate(int n, int nv, Type *vin, int *iain, int *jain) {
+		delete[] ia, ja, v;
+		Nv = nv;
+		N = n;
+		ia = new int[N + 1];
+		ja = new int[Nv];
+		v = new Type[Nv];
+		for (int i = 0; i < Nv; i++) {
+			v[i] = vin[i];
+			ja[i] = jain[i];
+		}
+		for (int i = 0; i < N + 1; i++) {
+			ia[i] = iain[i];
+		}
+
+	}
+
+	void deallocate() {
+		Nv = 0;
+		N = 0;
+		delete[] ia, ja, v;
+		v = new Type[0];
+		ia = new int[0];
+		ja = new int[0];
+	}
+
+	void refine() {
+		//剔除稀疏矩阵中的零元
+		int Nv2 = Nv;
+		for (int i = 0; i < Nv; i++) {
+			if (v[i] == 0) {
+				ja[i] = 0;
+				Nv2--;
+			}
+		}
+		double *v2;
+		int k = 0;
+		v2 = new double[Nv2];
+		for (int i = 0; i < Nv; i++) {
+			if (ja[i] != 0) {
+				v2[k] = v[i];
+				k++;
+			}
+		}
+
+		delete[] v;
+		v = v2;//指针操作
+
+		int *ia2;
+		ia2 = new int[N + 1];
+		ia2[0] = 1;
+		for (int i = 0; i < N; i++) {
+			ia2[i + 1] = ia[i + 1];
+			for (int j = ja[0]; j < ia[i + 1]; j++) {
+				if (ja[j - 1] == 0) {
+					ia2[i + 1]--;
+				}
+			}
+		}
+		delete[] ia;
+		ia = ia2;
+
+
+		int *ja2;
+		k = 0;
+		ja2 = new int[Nv2];
+		for (int i = 0; i < Nv; i++) {
+			if (ja[i] != 0) {
+				ja2[k] = ja[i];
+				k++;
+			}
+		}
+
+		delete[] ja;
+		ja = ja2;
+
+		Nv = Nv2;
+	}
+
+	inline Type & operator()(int I) {
+#ifdef BOUNDS_CHECK
+		if (I<1) {
+			cout << "Error: I = " << I << " < 1 " << " in SpMatrix operator()" << endl;
+			system("pause");
+			I = 1;
+		}
+		if (I>Nv) {
+			cout << "Error: I = " << I << " > Nv = " << Nv << " in SpMatrix operator()" << endl;
+			system("pause");
+			I = Nv;
+		}
+#endif
+		return v[I - 1];
+	}
+
+	inline Type & operator()(int I, int J) {
+#ifdef BOUNDS_CHECK
+
+		if (I < 1) {
+			cout << "Error: I = " << I << " < 1 " << " in SpMtx" << endl;
+			system("pause");
+			I = 1;
+		}
+		if (I > N) {
+			cout << "Error: I = " << I << " > N = " << N << " in SpMtx" << endl;
+			system("pause");
+			I = N;
+		}
+		if (J < 1) {
+			cout << "Error: J = " << J << " < 1 = " << " in SpMtx" << endl;
+			system("pause");
+			J = 1;
+		}
+		if (J > N) {
+			cout << "Error: J = " << J << " > N = " << N << " in SpMtx" << endl;
+			system("pause");
+			J = N;
+		}
+#endif
+
+		for (int ii = ia[I - 1]; ii < ia[I]; ii++) {
+			if (J == ja[ii - 1]) {
+				return v[ii - 1];
+			}
+		}
+
+#ifdef BOUNDS_CHECK
+		if (aa != 0) {
+			//上次对零元强行赋值，并没有赋上
+			cout << "Warning: Sparse Element wasn't set: ";
+			cout << "  I = " << I << "  J = " << J;
+			getchar();
+		}
+#endif
+		aa = 0;//一定要将aa清零
+		return aa;
+	}
+
+	inline int & Ia(int I) {
+#ifdef BOUNDS_CHECK
+		if (I<1) {
+			cout << "Error: I = " << I << " < 1 " << " in SpMatrix Ia(int I)" << endl;
+			system("pause");
+			I = 1;
+		}
+		if (I>N + 1) {
+			cout << "Error: I = " << I << " > N+1 = " << N + 1 << " in SpMatrix Ia(int I)" << endl;
+			system("pause");
+			I = N + 1;
+		}
+
+#endif
+		return ia[I - 1];
+	}
+
+	inline int & Ja(int I) {
+#ifdef BOUNDS_CHECK
+		if (I<1) {
+			cout << "Error: I = " << I << " < 1 " << " in SpMatrix Ja(int I)" << endl;
+			system("pause");
+			I = 1;
+		}
+		if (I>Nv) {
+			cout << "Error: I = " << I << " > Nv = " << Nv << " in SpMatrix Ja(int I)" << endl;
+			system("pause");
+			I = Nv;
+		}
+#endif
+		return ja[I - 1];
+	}
+
+	inline void Output(string filename) {
+		ofstream Outfile(filename);
+		Outfile.precision(10);
+		for (int i = 0; i < Nv; i++) {
+			Outfile << v[i] << endl;
+		}
+		for (int i = 0; i < N + 1; i++) {
+			Outfile << ia[i] << endl;
+		}
+		for (int i = 0; i < Nv; i++) {
+			Outfile << ja[i] << endl;
+		}
+		Outfile.close();
+	}
+
+	inline SpMtrx<Type> & operator+=(const Type x) {
+		for (int i = 0; i < Nv; i++) {
+			this->v[i] += x;
+		}
+
+		return *this;
+	};
+
+	inline SpMtrx<Type> & operator-=(const Type x) {
+		for (int i = 0; i < Nv; i++) {
+			this->v[i] -= x;
+		}
+
+		return *this;
+	};
+
+	inline SpMtrx<Type> & operator*=(const Type x) {
+		for (int i = 0; i < Nv; i++) {
+			this->v[i] *= x;
+		}
+
+		return *this;
+	};
+	inline SpMtrx<Type> & operator/=(const Type x) {
+		for (int i = 0; i < Nv; i++) {
+			this->v[i] /= x;
+		}
+
+		return *this;
+	};
+
+	inline SpMtrx<Type> & operator=(const SpMtrx<Type> & A) {
+		if (this->Nv != A.Nv) {
+			if (this->Nv != 0) {
+				cout << "Warning: \"operator=\" in Matrix1 may be wrong, because Nv is not equal" << endl;
+				system("pause");
+			}
+			this->deallocate();
+			this->allocate(A.N, A.Nv);
+		}
+		this->SpMtxType = A.SpMtxType;
+		for (int i = 0; i <= A.N; i++) {
+			this->ia[i] = A.ia[i];
+		}
+
+		for (int i = 0; i < A.Nv; i++) {
+			this->v[i] = A.v[i];
+			this->ja[i] = A.ja[i];
+		}
+
+		return (*this);
+	};
+};
+
+inline SpMtrx<double> operator+(const SpMtrx<double> &A, const  SpMtrx<double> &B) {
+
+	SpMtrx<double> Temp, c;
+	int N, Nv;
+#ifdef BOUNDS_CHECK
+	if (A.N != B.N && A.N*B.N != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N != B.N && A.N*B.N != 0" << endl;
+		system("pause");
+	};
+	if (A.N == 0 && A.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N == 0 && A.Nv != 0" << endl;
+		system("pause");
+	}
+	if (B.N == 0 && B.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: B.N == 0 && B.Nv != 0" << endl;
+		system("pause");
+	}
+#endif
+	if (A.Nv == 0) {
+		c = B;
+		return c;
+	}
+	if (B.Nv == 0) {
+		c = A;
+		return c;
+	}
+	N = A.N;
+	Nv = A.Nv + B.Nv + 1;
+	Temp.allocate(N, Nv);
+	double c0 = 1.0;
+	char trans = 'N';
+	int ierr;
+	int request = 0, sort = 0;
+	mkl_dcsradd(&trans, &request, &sort, &N, &N, A.v, A.ja, A.ia, &c0, B.v, B.ja, B.ia, Temp.v, Temp.ja, Temp.ia, &Nv, &ierr);
+	if (ierr != 0) {
+		cout << "Wrong in SpMtrx<double> operator+: ierr = " << ierr << endl;
+		system("pause");
+	}
+	Nv = Temp.Ia(N + 1) - 1;
+	c.allocate(N, Nv);
+
+	for (int i = 0; i <= c.N; i++) {
+		c.ia[i] = Temp.ia[i];
+	}
+
+	for (int i = 0; i < c.Nv; i++) {
+		c.v[i] = Temp.v[i];
+		c.ja[i] = Temp.ja[i];
+	}
+	if (A.SpMtxType == 1 || B.SpMtxType == 1) {
+		c.SpMtxType = 1;
+	}
+	else {
+		c.SpMtxType = 0;
+	}
+	return c;
+};
+inline void Mplus(SpMtrx<double> &c, const SpMtrx<double> &A, const SpMtrx<double> &B) {
+	SpMtrx<double> Temp;
+	int N, Nv;
+#ifdef BOUNDS_CHECK
+	if (A.N != B.N && A.N*B.N != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N != B.N && A.N*B.N != 0" << endl;
+		system("pause");
+	};
+	if (A.N == 0 && A.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N == 0 && A.Nv != 0" << endl;
+		system("pause");
+	}
+	if (B.N == 0 && B.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: B.N == 0 && B.Nv != 0" << endl;
+		system("pause");
+	}
+#endif
+	if (A.Nv == 0) {
+		c = B;
+	}
+	if (B.Nv == 0) {
+		c = A;
+	}
+	N = A.N;
+	Nv = A.Nv + B.Nv + 1;
+	Temp.allocate(N, Nv);
+	double c0 = 1.0;
+	char trans = 'N';
+	int ierr;
+	int request = 0, sort = 0;
+	mkl_dcsradd(&trans, &request, &sort, &N, &N, A.v, A.ja, A.ia, &c0, B.v, B.ja, B.ia, Temp.v, Temp.ja, Temp.ia, &Nv, &ierr);
+	if (ierr != 0) {
+		cout << "Wrong in SpMtrx<double> operator+: ierr = " << ierr << endl;
+		system("pause");
+	}
+	Nv = Temp.Ia(N + 1) - 1;
+	c.deallocate();
+	c.allocate(N, Nv);
+
+	for (int i = 0; i <= c.N; i++) {
+		c.ia[i] = Temp.ia[i];
+	}
+
+	for (int i = 0; i < c.Nv; i++) {
+		c.v[i] = Temp.v[i];
+		c.ja[i] = Temp.ja[i];
+	}
+	if (A.SpMtxType == 1 || B.SpMtxType == 1) {
+		c.SpMtxType = 1;
+	}
+	else {
+		c.SpMtxType = 0;
+	}
+};
+inline void Mplus(SpMtrx<double> &c, const SpMtrx<double> &A, const SpMtrx<double> &B, double c0) {
+	//c=A+c0*B;
+	SpMtrx<double> Temp;
+	int N, Nv;
+#ifdef BOUNDS_CHECK
+	if (A.N != B.N && A.N*B.N != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N != B.N && A.N*B.N != 0" << endl;
+		system("pause");
+	};
+	if (A.N == 0 && A.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N == 0 && A.Nv != 0" << endl;
+		system("pause");
+	}
+	if (B.N == 0 && B.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: B.N == 0 && B.Nv != 0" << endl;
+		system("pause");
+	}
+#endif
+	if (A.Nv == 0) {
+		c = B;
+	}
+	if (B.Nv == 0) {
+		c = A;
+	}
+	N = A.N;
+	Nv = A.Nv + B.Nv + 1;
+	Temp.allocate(N, Nv);
+	char trans = 'N';
+	int ierr;
+	int request = 0, sort = 0;
+	mkl_dcsradd(&trans, &request, &sort, &N, &N, A.v, A.ja, A.ia, &c0, B.v, B.ja, B.ia, Temp.v, Temp.ja, Temp.ia, &Nv, &ierr);
+	if (ierr != 0) {
+		cout << "Wrong in SpMtrx<double> operator+: ierr = " << ierr << endl;
+		system("pause");
+	}
+	Nv = Temp.Ia(N + 1) - 1;
+	c.deallocate();
+	c.allocate(N, Nv);
+
+	for (int i = 0; i <= c.N; i++) {
+		c.ia[i] = Temp.ia[i];
+	}
+
+	for (int i = 0; i < c.Nv; i++) {
+		c.v[i] = Temp.v[i];
+		c.ja[i] = Temp.ja[i];
+	}
+	if (A.SpMtxType == 1 || B.SpMtxType == 1) {
+		c.SpMtxType = 1;
+	}
+	else {
+		c.SpMtxType = 0;
+	}
+};
+inline void Mplus(SpMtrx<double> &c, const SpMtrx<double> &A, const SpMtrx<double> &B, double c0, double d0) {
+	//c=c0*A+d0*B;
+	if (c0 != 0) {
+		double d1 = d0 / c0;
+		//c = (A + d1*B)*c0
+		Mplus(c, A, B, d1);
+		c *= c0;
+	}
+	else if (d0 != 0) {
+		double c1 = c0 / d0;
+		//c = (c1*A + B)*d0
+		Mplus(c, B, A, c1);
+		c *= d0;
+	}
+	else {
+		c *= 0;
+	}
+}
+
+inline SpMtrx<double> MplusT(const SpMtrx<double> &A, const  SpMtrx<double> &B) {
+	//计算 c=A+B^(T)
+	SpMtrx<double> Temp, c;
+	int N, Nv;
+#ifdef BOUNDS_CHECK
+	if (A.N != B.N && A.N*B.N != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N != B.N && A.N*B.N != 0" << endl;
+		system("pause");
+	};
+	if (A.N == 0 && A.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N == 0 && A.Nv != 0" << endl;
+		system("pause");
+	}
+	if (B.N == 0 && B.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: B.N == 0 && B.Nv != 0" << endl;
+		system("pause");
+	}
+#endif
+	if (A.Nv == 0) {
+		c = B;
+		return c;
+	}
+	if (B.Nv == 0) {
+		c = A;
+		return c;
+	}
+	N = A.N;
+	Nv = A.Nv + B.Nv + 1;
+	Temp.allocate(N, Nv);
+	double c0 = 1.0;
+	char trans = 'T';//
+	int ierr;
+	int request = 0, sort = 0;
+	mkl_dcsradd(&trans, &request, &sort, &N, &N, A.v, A.ja, A.ia, &c0, B.v, B.ja, B.ia, Temp.v, Temp.ja, Temp.ia, &Nv, &ierr);
+	if (ierr != 0) {
+		cout << "Wrong in SpMtrxAddT: ierr = " << ierr << endl;
+		system("pause");
+	}
+	Nv = Temp.Ia(N + 1) - 1;
+	c.allocate(N, Nv);
+
+	for (int i = 0; i <= c.N; i++) {
+		c.ia[i] = Temp.ia[i];
+	}
+
+	for (int i = 0; i < c.Nv; i++) {
+		c.v[i] = Temp.v[i];
+		c.ja[i] = Temp.ja[i];
+	}
+	if (A.SpMtxType == 1 || B.SpMtxType == 1) {
+		c.SpMtxType = 1;
+	}
+	else {
+		c.SpMtxType = 0;
+	}
+	return c;
+};
+inline void MplusT(SpMtrx<double> &c, const SpMtrx<double> &A, const  SpMtrx<double> &B) {
+	//计算 c=A+B^(T)
+	SpMtrx<double> Temp;
+	int N, Nv;
+#ifdef BOUNDS_CHECK
+	if (A.N != B.N && A.N*B.N != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N != B.N && A.N*B.N != 0" << endl;
+		system("pause");
+	};
+	if (A.N == 0 && A.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: A.N == 0 && A.Nv != 0" << endl;
+		system("pause");
+	}
+	if (B.N == 0 && B.Nv != 0) {
+		cout << "Wrong in SpMtrx operator+: B.N == 0 && B.Nv != 0" << endl;
+		system("pause");
+	}
+#endif
+	if (A.Nv == 0) {
+		c = B;
+	}
+	if (B.Nv == 0) {
+		c = A;
+	}
+	N = A.N;
+	Nv = A.Nv + B.Nv + 1;
+	Temp.allocate(N, Nv);
+	double c0 = 1.0;
+	char trans = 'T';//
+	int ierr;
+	int request = 0, sort = 0;
+	mkl_dcsradd(&trans, &request, &sort, &N, &N, A.v, A.ja, A.ia, &c0, B.v, B.ja, B.ia, Temp.v, Temp.ja, Temp.ia, &Nv, &ierr);
+	if (ierr != 0) {
+		cout << "Wrong in SpMtrxAddT: ierr = " << ierr << endl;
+		system("pause");
+	}
+	Nv = Temp.Ia(N + 1) - 1;
+	c.deallocate();
+	c.allocate(N, Nv);
+
+	for (int i = 0; i <= c.N; i++) {
+		c.ia[i] = Temp.ia[i];
+	}
+
+	for (int i = 0; i < c.Nv; i++) {
+		c.v[i] = Temp.v[i];
+		c.ja[i] = Temp.ja[i];
+	}
+	if (A.SpMtxType == 1 || B.SpMtxType == 1) {
+		c.SpMtxType = 1;
+	}
+	else {
+		c.SpMtxType = 0;
+	}
+};
+
+inline SpMtrx<double> operator-(const SpMtrx<double> &A, const  SpMtrx<double> &B) {
+
+	SpMtrx<double> Temp, c;
+	int N, Nv;
+#ifdef BOUNDS_CHECK
+	if (A.N != B.N) {
+		cout << "Error: A.N = " << A.N << " != B.N = " << B.N << " in SpMtrx<double> operator- (const SpMtrx<double> &A, const  SpMtrx<double> &B)" << endl;
+		system("pause");
+		return A;
+	};
+#endif
+	N = A.N;
+	Nv = A.Nv + B.Nv;
+	Temp.allocate(N, Nv);
+	double c0 = -1.0;
+	char trans = 'N';
+	int ierr;
+	int request = 0, sort = 0;
+	mkl_dcsradd(&trans, &request, &sort, &N, &N, A.v, A.ja, A.ia, &c0, B.v, B.ja, B.ia, Temp.v, Temp.ja, Temp.ia, &Nv, &ierr);
+	Nv = Temp.Ia(N + 1) - 1;
+	c.allocate(N, Nv);
+
+	for (int i = 0; i <= c.N; i++) {
+		c.ia[i] = Temp.ia[i];
+	}
+
+	for (int i = 0; i < c.Nv; i++) {
+		c.v[i] = Temp.v[i];
+		c.ja[i] = Temp.ja[i];
+	}
+	if (A.SpMtxType == 1 || B.SpMtxType == 1) {
+		c.SpMtxType = 1;
+	}
+	else {
+		c.SpMtxType = 0;
+	}
+	return c;
+};
+inline void Msubs(SpMtrx<double> &c, const SpMtrx<double> &A, const  SpMtrx<double> &B) {
+
+	SpMtrx<double> Temp;
+	int N, Nv;
+#ifdef BOUNDS_CHECK
+	if (A.N != B.N) {
+		cout << "Error: A.N = " << A.N << " != B.N = " << B.N << " in SpMtrx<double> operator- (const SpMtrx<double> &A, const  SpMtrx<double> &B)" << endl;
+		system("pause");
+	};
+#endif
+	N = A.N;
+	Nv = A.Nv + B.Nv;
+	Temp.allocate(N, Nv);
+	double c0 = -1.0;
+	char trans = 'N';
+	int ierr;
+	int request = 0, sort = 0;
+	mkl_dcsradd(&trans, &request, &sort, &N, &N, A.v, A.ja, A.ia, &c0, B.v, B.ja, B.ia, Temp.v, Temp.ja, Temp.ia, &Nv, &ierr);
+	Nv = Temp.Ia(N + 1) - 1;
+	c.deallocate();
+	c.allocate(N, Nv);
+
+	for (int i = 0; i <= c.N; i++) {
+		c.ia[i] = Temp.ia[i];
+	}
+
+	for (int i = 0; i < c.Nv; i++) {
+		c.v[i] = Temp.v[i];
+		c.ja[i] = Temp.ja[i];
+	}
+	if (A.SpMtxType == 1 || B.SpMtxType == 1) {
+		c.SpMtxType = 1;
+	}
+	else {
+		c.SpMtxType = 0;
+	}
+};
+
+inline SpMtrx<double> operator*(const double x, const SpMtrx<double> & B) {
+
+	SpMtrx<double> Temp;
+
+	Temp.allocate(B.N, B.Nv);
+
+	for (int i = 0; i <= B.N; i++) {
+		Temp.ia[i] = B.ia[i];
+		//cout << Temp.ia[i] << endl;
+	}
+
+	for (int i = 0; i < B.Nv; i++) {
+		Temp.v[i] = x*B.v[i];
+		Temp.ja[i] = B.ja[i];
+	}
+	Temp.SpMtxType = B.SpMtxType;
+
+	return Temp;
+
+};
+
+
+inline Matrix1<double> operator*(const SpMtrx<double> & A, const Matrix1<double> & X) {
+#ifdef BOUNDS_CHECK
+	if (A.N != X.Nv) {
+		cout << "Error: A.N = " << A.N << " != X.Nv = " << X.Nv << " in Matrix1<double> operator*(const SpMtrx<double> & A, const Matrix1<double> & X)" << endl;
+		system("pause");
+		return X;
+	};
+#endif
+	Matrix1<double> b(X.I0, X.I1);
+
+	if (A.SpMtxType == 0) {
+		//对称稀疏矩阵
+		const char uplo = 'U';
+		int NN = A.N;
+		mkl_dcsrsymv(&uplo, &NN, A.v, A.ia, A.ja, X.v_p, b.v_p);
+	}
+	else if (A.SpMtxType == 1) {
+		//非对称稀疏矩阵
+		const char transa = 'N';
+		int NN = A.N;
+		mkl_dcsrgemv(&transa, &NN, A.v, A.ia, A.ja, X.v_p, b.v_p);
+	}
+	return b;
+};
+inline void Mmul(Matrix1<double> &b, const SpMtrx<double> & A, const Matrix1<double> & X) {
+#ifdef BOUNDS_CHECK
+	if (A.N != X.Nv) {
+		cout << "Error: A.N = " << A.N << " != X.Nv = " << X.Nv << " in Matrix1<double> operator*(const SpMtrx<double> & A, const Matrix1<double> & X)" << endl;
+		system("pause");
+		return;
+	};
+#endif
+	if (b.Nv == 0) {
+		b.allocate(X.Nv);
+	}
+	else if (b.Nv != X.Nv) {
+		cout << "Error: b.Nv != X.Nv in SpMtrxMtpM1!" << endl;
+		system("pause");
+		return;
+	}
+
+	if (A.SpMtxType == 0) {
+		//对称稀疏矩阵
+		const char uplo = 'U';
+		int NN = A.N;
+		mkl_dcsrsymv(&uplo, &NN, A.v, A.ia, A.ja, X.v_p, b.v_p);
+	}
+	else if (A.SpMtxType == 1) {
+		//非对称稀疏矩阵
+		const char transa = 'N';
+		int NN = A.N;
+		mkl_dcsrgemv(&transa, &NN, A.v, A.ia, A.ja, X.v_p, b.v_p);
+	}
+}
+
+inline void Msolve(SpMtrx<double> &K, Matrix1<double> &F, Matrix1<double> &X) {
+
+	__int64 pt[64];
+	int maxfct = 1, mnum = 1, mtype, phase, error, msglvl;
+	int iparm[64];
+	int perm;
+	int nrhs = 1;
+
+	//Initiliaze the internal solver memory pointer.This is only necessary for the FIRST call of the PARDISO solver.
+	for (int i = 0; i < 64; i++) {
+		iparm[i] = 0;
+		pt[i] = 0;
+	}
+
+	//ompnum = omp_get_thread_num();
+	iparm[0] = 1;//no solver default
+	iparm[1] = 2;//fill - in reordering from METIS
+	iparm[2] = 0;//numbers of processors, value of OMP_NUM_THREADS
+	iparm[3] = 0;//no iterative - direct algorithm
+	iparm[4] = 0;//no user fill - in reducing permutation
+	iparm[5] = 0;//= 0 solution on the first n compoments of x
+	iparm[6] = 16;//default logical fortran unit number for output
+	iparm[7] = 9;//numbers of iterative refinement steps
+	iparm[8] = 0;//not in use
+	iparm[9] = 13;//perturbe the pivot elements with 1E-13
+	iparm[10] = 1;//use nonsymmetric permutation and scaling MPS
+	iparm[11] = 0;//not in use
+	iparm[12] = 0;//not in use
+	iparm[13] = 0;//Output: number of perturbed pivots
+	iparm[14] = 0;//not in use
+	iparm[15] = 0;//not in use
+	iparm[16] = 0;//not in use
+	iparm[17] = -1;//Output : number of nonzeros in the factor LU
+	iparm[18] = -1;//Output : Mflops for LU factorization
+	iparm[19] = 0;//Output : Numbers of CG Iterations
+	error = 0;//initialize error flag
+	msglvl = 0;//don't print statistical information
+	if (K.SpMtxType == 0) {
+		mtype = -2;//real and symmetric indefinite
+	}
+	else if (K.SpMtxType == 1) {
+		mtype = 11;//real and nonsymmetric
+	}
+	phase = 13;// Analysis, numerical factorization, solve, iterative refinement
+	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &K.N, K.v, K.ia, K.ja, &perm, &nrhs, iparm, &msglvl, F.v_p, X.v_p, &error);
+	if (error != 0) {
+		K.Output("K.dat");
+		F.output("F.dat");
+		cout << "ERROR1 IN SolverMKL was detected: " << error;
+		getchar();
+	}
+
+	phase = -1;
+	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &K.N, K.v, K.ia, K.ja, &perm, &nrhs, iparm, &msglvl, F.v_p, X.v_p, &error);
+
+	if (error != 0) {
+		cout << "ERROR2 IN SolverMKL was detected: " << error;
+		getchar();
+	}
+}
+inline void Msolve(SpMtrx<double> &K, Matrix1<double> &F) {
+	//solve X = K\X;
+	__int64 pt[64];
+	int maxfct = 1, mnum = 1, mtype, phase, error, msglvl;
+	int iparm[64];
+	int perm;
+	int nrhs = 1;
+	Matrix1<double> X;
+	X = F;
+	//Initiliaze the internal solver memory pointer.This is only necessary for the FIRST call of the PARDISO solver.
+	for (int i = 0; i < 64; i++) {
+		iparm[i] = 0;
+		pt[i] = 0;
+	}
+
+	//ompnum = omp_get_thread_num();
+	iparm[0] = 1;//no solver default
+	iparm[1] = 2;//fill - in reordering from METIS
+	iparm[2] = 0;//numbers of processors, value of OMP_NUM_THREADS
+	iparm[3] = 0;//no iterative - direct algorithm
+	iparm[4] = 0;//no user fill - in reducing permutation
+	iparm[5] = 1;//= 0 solution on the first n compoments of x///**************************************
+	iparm[6] = 16;//default logical fortran unit number for output
+	iparm[7] = 9;//numbers of iterative refinement steps
+	iparm[8] = 0;//not in use
+	iparm[9] = 13;//perturbe the pivot elements with 1E-13
+	iparm[10] = 1;//use nonsymmetric permutation and scaling MPS
+	iparm[11] = 0;//not in use
+	iparm[12] = 0;//not in use
+	iparm[13] = 0;//Output: number of perturbed pivots
+	iparm[14] = 0;//not in use
+	iparm[15] = 0;//not in use
+	iparm[16] = 0;//not in use
+	iparm[17] = -1;//Output : number of nonzeros in the factor LU
+	iparm[18] = -1;//Output : Mflops for LU factorization
+	iparm[19] = 0;//Output : Numbers of CG Iterations
+	error = 0;//initialize error flag
+	msglvl = 0;//don't print statistical information
+	if (K.SpMtxType == 0) {
+		mtype = -2;//real and symmetric indefinite
+	}
+	else if (K.SpMtxType == 1) {
+		mtype = 11;//real and nonsymmetric
+	}
+	phase = 13;// Analysis, numerical factorization, solve, iterative refinement
+	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &K.N, K.v, K.ia, K.ja, &perm, &nrhs, iparm, &msglvl, F.v_p, X.v_p, &error);
+	if (error != 0) {
+		K.Output("K.dat");
+		F.output("F.dat");
+		cout << "ERROR1 IN SolverMKL was detected: " << error;
+		getchar();
+	}
+
+	phase = -1;
+	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &K.N, K.v, K.ia, K.ja, &perm, &nrhs, iparm, &msglvl, F.v_p, X.v_p, &error);
+
+	if (error != 0) {
+		cout << "ERROR2 IN SolverMKL was detected: " << error;
+		getchar();
+	}
+}
+
+inline void Msolve(SpMtrx<double> &K, Matrix1<double> &F, Matrix1<double> &X, int solveid);
 
 
 
@@ -4318,7 +5197,315 @@ inline float dot(const float &x1, const float &y1, const float &z1, const float 
 }
 
 
+template<class _Ty>
+void KK2SpM(SpMtrx<_Ty> &Kp, Matrix3<_Ty> &KK, Matrix2<int> &t, int SpMtrixType) {
+	int NI = KK.NI;
+	int NE = KK.NK;
+	int ep = t.NJ;
+	int D = NI / ep;
+	Matrix1<int> nk(NI);
+	Matrix3<int> ikm, jkm;
 
+	/*time_t t0, t1;
+	t0 = clock();*/
+
+	ikm.allocate(NI, NI, NE);
+	jkm.allocate(NI, NI, NE);
+
+	for (int kk = 1; kk <= NE; kk++) {
+		for (int ii = 1; ii <= ep; ii++) {
+			for (int jj = 1; jj <= D; jj++) {
+				nk((ii - 1)*D + jj-1) = D*(t(kk-1, ii-1) - 1) + jj;
+			}
+		}
+
+		for (int ii = 0; ii < NI; ii++) {
+			for (int jj = 0; jj < NI; jj++) {
+				ikm(ii, jj, kk-1) = nk(jj);
+				jkm(ii, jj, kk-1) = nk(ii);
+			}
+		}
+	}
+
+	//nk.output();
+	//ikm.output();
+	//jkm.output();
+
+	//t1 = clock();	cout << t1 - t0 << endl; t0 = t1;
+
+	int N = 0;
+	for (int i = 0; i < t.Nv; i++) {
+		N = Max(N, t.v_p[i]);
+	}
+	//t1 = clock();	cout << t1 - t0 << endl; t0 = t1;
+	xij2SpM(Kp, KK.v_p, ikm.v_p, jkm.v_p, N*D, NI*NI*NE, SpMtrixType);
+	//t1 = clock();	cout << t1 - t0 << endl; t0 = t1;
+	//Kp.refine();//不需要
+	//t1 = clock();	cout << t1 - t0 << endl; t0 = t1;
+}
+
+
+template<class _Ty>
+void xij2SpM(SpMtrx<_Ty> &Kp, _Ty *X, int *ix, int *jx, int N, int Nv, int SpMtrixType)
+{
+	//三元数矩阵转CSR转*对称*稀疏矩阵
+	//输入的参数X, ix, jx都将被破坏
+
+
+	//首先把ix和jx和X相同元素进行缩并
+
+	/*time_t t0, t1;
+	t0 = clock();*/
+
+	int i1, i2, i, j;
+
+	for (i = 0; i < Nv; i++) {
+		if (X[i] == 0 || ix[i]>jx[i]) {
+			ix[i] = 0;
+			jx[i] = 0;
+		}
+	}
+	//去除0元素
+	int Nv1 = 0;
+	if (SpMtrixType == 0) {
+		//对称矩阵只保留上半部
+		for (int i = 0; i < Nv; i++) {
+			if (ix[i] <= jx[i] && ix[i] != 0) {
+				ix[Nv1] = ix[i];
+				jx[Nv1] = jx[i];
+				X[Nv1] = X[i];
+				Nv1++;
+			}
+
+		}
+	}
+	else if (SpMtrixType == 1) {
+		//非对称矩阵
+		for (int i = 0; i < Nv; i++) {
+			if (ix[i] != 0) {
+				ix[Nv1] = ix[i];
+				jx[Nv1] = jx[i];
+				X[Nv1] = X[i];
+				Nv1++;
+			}
+
+		}
+	}
+	Nv = Nv1;
+	//int N1;
+	//	DuplicateSum(N1, X, ix, jx, Nv);
+	//cout << Nv<<endl;
+	for (i = 0; i < Nv; i++) {
+		if (ix[i] != 0) {
+
+			i1 = ix[i];
+			i2 = jx[i];
+
+			for (j = i + 1; j < Nv; j++) {
+				if (i1 == ix[j] && i2 == jx[j]) {
+					X[i] += X[j];
+					X[j] = 0;
+					ix[j] = 0;
+					jx[j] = 0;
+				}
+			}
+		}
+		/*if (i%( Nv / 1000)==0){
+		cout << i / (Nv / 1000)<<" / 1000" << endl;
+		}*/
+	}
+
+	//t1 = clock();	cout << t1 - t0 << endl; t0 = t1;
+
+
+
+	Kp.allocate(N, Nv1);
+
+
+	//统计每一行的元素个数，暂时存到Kp.ia
+	for (int i = 0; i < N + 1; i++) {
+		Kp.ia[i] = 0;
+	}
+
+	for (int i = 0; i < Nv; i++) {
+		if (ix[i] <= jx[i] && ix[i] != 0) {
+			Kp.ia[ix[i]]++;
+		}
+	}
+
+	//生成ia
+	Kp.ia[0] = 1;
+	for (int i = 1; i < N + 1; i++) {
+		Kp.ia[i] += Kp.ia[i - 1];
+	}
+
+	//生成ja和v
+	for (int i = 0; i < Nv1; i++) {
+		Kp.ja[i] = 0;
+		Kp.v[i] = 0;
+	}
+	//Kp.Output("_Kp.output");
+
+	if (SpMtrixType == 0) {
+		//对称矩阵只保留上半部
+		for (int i = 0; i < Nv; i++) {
+			if (ix[i] <= jx[i] && ix[i] != 0) {
+				for (int ii = Kp.ia[ix[i] - 1]; ii < Kp.ia[ix[i]]; ii++) {
+					//cout << endl;
+					//cout << i << endl;
+					//cout << ix[i] << endl;
+					//cout << Kp.ia[ix[i] - 1] << endl;
+					//cout << endl;
+					if (Kp.ja[ii - 1] == 0) {
+						Kp.ja[ii - 1] = jx[i];
+						Kp.v[ii - 1] = X[i];
+						break;
+					}
+				}
+			}
+		}
+	}
+	else if (SpMtrixType == 1) {
+		//非对称矩阵
+		for (int i = 0; i < Nv; i++) {
+			if (ix[i] != 0) {
+				for (int ii = Kp.ia[ix[i] - 1]; ii < Kp.ia[ix[i]]; ii++) {
+					if (Kp.ja[ii - 1] == 0) {
+						Kp.ja[ii - 1] = jx[i];
+						Kp.v[ii - 1] = X[i];
+						break;
+					}
+				}
+			}
+		}
+	}
+	//对ja和v重排序
+	int jb;
+	double vb;
+	for (int i = 1; i < N; i++) {
+		for (int ii = Kp.ia[i - 1]; ii < Kp.ia[i]; ii++) {
+			for (int jj = Kp.ia[i - 1]; jj < ii; jj++) {
+				if (Kp.ja[jj - 1] > Kp.ja[ii - 1]) {
+					jb = Kp.ja[jj - 1];
+					Kp.ja[jj - 1] = Kp.ja[ii - 1];
+					Kp.ja[ii - 1] = jb;
+
+					vb = Kp.v[jj - 1];
+					Kp.v[jj - 1] = Kp.v[ii - 1];
+					Kp.v[ii - 1] = vb;
+				}
+			}
+
+		}
+
+	}
+	Kp.SpMtxType = SpMtrixType;
+}
+
+
+template<class _Ty>
+void SpM2Mtr(Matrix2<_Ty> &A, SpMtrx<_Ty> &Kp, const int ni, const int nj)
+{
+	A.allocate(ni, nj);
+	for (int j = 0; j < nj; ++j)
+		for (int i = 0; i < ni; ++i)
+			A(i, j) = Kp(i+1, j+1);
+}
+
+
+template<class _Ty>
+bool Msolver(SpMtrx<_Ty> &K, Matrix1<_Ty> &F, Matrix1<_Ty> &X)
+{
+	__int64 pt[64];
+	int maxfct = 1, mnum = 1, mtype, phase, error, msglvl;
+	int iparm[64];
+	int perm;
+	int nrhs = 1;
+
+	//Initiliaze the internal solver memory pointer.This is only necessary for the FIRST call of the PARDISO solver.
+	for (int i = 0; i < 64; i++) {
+		iparm[i] = 0;
+		pt[i] = 0;
+	}
+
+	//ompnum = omp_get_thread_num();
+	iparm[0] = 1;//no solver default
+	iparm[1] = 2;//fill - in reordering from METIS
+	iparm[2] = 0;//numbers of processors, value of OMP_NUM_THREADS
+	iparm[3] = 0;//no iterative - direct algorithm
+	iparm[4] = 0;//no user fill - in reducing permutation
+	iparm[5] = 0;//= 0 solution on the first n compoments of x
+	iparm[6] = 16;//default logical fortran unit number for output
+	iparm[7] = 9;//numbers of iterative refinement steps
+	iparm[8] = 0;//not in use
+	iparm[9] = 13;//perturbe the pivot elements with 1E-13
+	iparm[10] = 1;//use nonsymmetric permutation and scaling MPS
+	iparm[11] = 0;//not in use
+	iparm[12] = 0;//not in use
+	iparm[13] = 0;//Output: number of perturbed pivots
+	iparm[14] = 0;//not in use
+	iparm[15] = 0;//not in use
+	iparm[16] = 0;//not in use
+	iparm[17] = -1;//Output : number of nonzeros in the factor LU
+	iparm[18] = -1;//Output : Mflops for LU factorization
+	iparm[19] = 0;//Output : Numbers of CG Iterations
+	error = 0;//initialize error flag
+	msglvl = 0;//don't print statistical information
+	if (K.SpMtxType == 0) {
+		mtype = -2;//real and symmetric indefinite
+	}
+	else if (K.SpMtxType == 1) {
+		mtype = 11;//real and nonsymmetric
+	}
+	phase = 13;// Analysis, numerical factorization, solve, iterative refinement
+	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &K.N, K.v, K.ia, K.ja, &perm, &nrhs, iparm, &msglvl, F.v_p, X.v_p, &error);
+	if (error != 0) {
+		K.Output("K.output");
+		F.output("F.output", 4);
+		cout << "ERROR1 IN SolverMKL was detected: " << error;
+		cout << endl;
+		getchar();
+	}
+
+	phase = -1;
+	pardiso(pt, &maxfct, &mnum, &mtype, &phase, &K.N, K.v, K.ia, K.ja, &perm, &nrhs, iparm, &msglvl, F.v_p, X.v_p, &error);
+
+	if (error != 0) {
+		cout << "ERROR2 IN SolverMKL was detected: " << error;
+		cout << endl;
+		getchar();
+	}
+	return (error==0);
+}
+
+
+template<class _Ty>
+bool Msolver(SpMtrx<_Ty> &K, Matrix1<_Ty> &X)
+{
+	return Msolver(SpMtrx<_Ty> &K, Matrix1<_Ty> &X, Matrix1<_Ty> &X);
+}
+
+
+template<class _Ty>
+void Msolver(SpMtrx<_Ty> &K, Matrix1<_Ty> &F, Matrix1<_Ty> &X, int solveid)
+{
+	//用OpenMP的方式单核(solveid = 0)求解,然后广播给所有进程
+	//int solveid = 0;//求解的核
+	//int myid, NumCore;
+	//MPI_Comm_rank(MPI_COMM_WORLD, &myid);
+	//MPI_Comm_size(MPI_COMM_WORLD, &NumCore);
+
+	//NumCore = min(NumCore, 4);//一般不超过4个核
+
+	//if (myid == solveid) {
+	//	int NumCore0 = omp_get_thread_num();//原始核数
+	//	NumCore0 = max(NumCore0, 1);
+	//	//cout << "Solve MPI : " << myid << " " << NumCore << NumCore0 << endl;
+	//	omp_set_num_threads(NumCore);//新的核数
+	//	Msolver(K, F, X);
+	//	omp_set_num_threads(NumCore0);//复原
+	//}
+}
 
 #endif
 

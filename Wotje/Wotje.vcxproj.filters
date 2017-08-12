@@ -41,5 +41,11 @@
     <ClCompile Include="Wotje.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="BladeCSD.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="Algorithm.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>
