@@ -24,13 +24,16 @@
     <ClInclude Include="targetver.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="BladeCSD.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="MatrixTemplate.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="Algorithm.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="BeamCSD.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="ModelCase.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -41,10 +44,13 @@
     <ClCompile Include="Wotje.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="BladeCSD.cpp">
+    <ClCompile Include="Algorithm.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="Algorithm.cpp">
+    <ClCompile Include="BeamCSD.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="ModelCase.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
