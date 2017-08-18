@@ -53,9 +53,17 @@ public:
 
 class GenArf {
 public:
-	const double pho = 0.0;
+	double pho;
 	double af, am, bt, r;
 	double ck, c0, c1, c2, c3, c4, c5;
+
+	GenArf() { pho = 0.0; }
+	~GenArf() { ; }
+	GenArf(const GenArf &G)
+	{
+		pho = G.pho, af = G.af, am = G.am, bt = G.bt, r = G.r;
+		ck = G.ck, c0 = G.c0, c1 = G.c1, c2 = G.c2, c3 = G.c3, c4 = G.c4, c5 = G.c5;
+	}
 
 	void InitCoef(double dt) {
 		af = pho / (pho + 1.0);
@@ -79,6 +87,8 @@ class ProbDefinition {
 public:
 	int dof, nbdry;
 	ProbType probtype;
+	myTYPE dt;
+	int Nstep;
 	Matrix1<FreeDomType> frdtype;
 	Matrix2<BDryType> bdrytype;
 	Matrix2<myTYPE> bdryvalue;
@@ -89,6 +99,8 @@ public:
 	~ProbDefinition() { ; }
 	ProbDefinition(const ProbDefinition &P)
 	{
+		dt = P.dt;
+		Nstep = P.Nstep;
 		dof = P.dof;
 		nbdry = P.nbdry;
 		probtype = P.probtype;
@@ -132,15 +144,24 @@ public:
 	}
 	~ModelCase() { ; }
 
-	void GetModel(void);
+	virtual void GetModel();
 
-	void GetProb(void);
+	virtual void GetProb();
 
 	void CantileverModel(void);
 
 };
 
 
+class Monitor {
+private:
+	// settings
+
+public:
+	Monitor() { ; }
+	~Monitor() { ; }
+	void NodeMonitor(ModelCase &M);
+};
 
 
 class Beam_1D {
@@ -150,20 +171,25 @@ private:
 	Matrix1<int> nodeID_seq;
 	Matrix1<myTYPE> nodePosition;
 	Matrix3<myTYPE> DM, MM, Me, Ke;
-	SpMtrx<myTYPE> Ka, Ca, Ma;
+	SpMtrx<myTYPE> Ka, Ca, Ma, Karf;
 	ProbType ptype;
 	Matrix2<BDryType> bdrytype;
 	Matrix2<myTYPE> bdryvalue;
 	Matrix1<FreeDomType> frdtype;
-	Matrix1<myTYPE> Fp, q;
+	Matrix1<myTYPE> Fp;
+	Matrix1<myTYPE> Qt, q, q1, dq, ddq, q0, dq0, ddq0;
 	Matrix2<myTYPE> p0, p1;
+	Matrix2<myTYPE> *p_ptr;
 
 	ModeReduced ModePart;
 	GenArf GAf;
-	SpMtrx<myTYPE> *Ka_ptr, *Ma_ptr, *Ca_ptr, *Karf_ptr;
+	SpMtrx<myTYPE> *Ka_ptr, *Ma_ptr, *Ca_ptr, *Karf_ptr; // to be updated to const pointer
+	Matrix1<myTYPE> *Fp_ptr, *Qt_ptr, *q_ptr, *q0_ptr, *q1_ptr, *dq_ptr, *ddq_ptr, *dq0_ptr, *ddq0_ptr;
 	ModelCase model;
-	myTYPE length;
+	myTYPE length, dt;
+	int Nstep;
 	Matrix1<myTYPE> ristation;
+	//Monitor monitor;
 
 public:
 	Beam_1D() { ; }
@@ -175,22 +201,34 @@ public:
 		nodeID = B.nodeID, nodeID_bdry = B.nodeID_bdry, nodeID_seq = B.nodeID_seq;
 		nodePosition = B.nodePosition;
 		DM = B.DM, MM = B.MM, Me = B.Me, Ke = B.Ke;
-		Ka = B.Ka, Ca = B.Ca, Ma = B.Ma;
+		Ka = B.Ka, Ca = B.Ca, Ma = B.Ma, Karf = B.Karf;
 		ptype = B.ptype, bdrytype = B.bdrytype, bdryvalue = B.bdryvalue, frdtype = B.frdtype;
-		Fp = B.Fp, q = B.q, p0 = B.p0, p1 = B.p1;
+		Fp = B.Fp, p0 = B.p0, p1 = B.p1; p_ptr = B.p_ptr;
+		Qt = B.Qt, q = B.q, q1 = B.q1, dq = B.dq, ddq = B.ddq, q0 = B.q0, dq0 = B.dq0, ddq0 = B.ddq0;
 		ModePart = B.ModePart;
-		//GAf = B.GAf;
+		GAf = B.GAf;
 		model = B.model;
 		Ka_ptr = B.Ka_ptr, Ma_ptr = B.Ma_ptr, Ca_ptr = B.Ca_ptr, Karf_ptr = B.Karf_ptr;
+		Fp_ptr = B.Fp_ptr, Qt_ptr = B.Qt_ptr, q_ptr = B.q_ptr, q0_ptr = B.q0_ptr, q1_ptr = B.q1_ptr;
+		dq_ptr = B.dq_ptr, ddq_ptr = B.ddq_ptr, dq0_ptr = B.dq0_ptr, ddq0_ptr = B.ddq0_ptr;
+		length = B.length, dt = B.dt, ristation = B.ristation;
+		Nstep = B.Nstep;
+		//monitor = B.monitor;
 	}
 
 	void InitBeam1D(ModelCase &M);
+	void _Allocate(void);
 	void AssembleKM(void);
 	bool ReviseF(void);
 	bool SetBdryCond(void);
 	void StaticSolution(void);
 	void ModeSolution(void);
 	void DynamicSolution(void);
+	void GetDynQuant(void);
+	void ResetQt(void);
+	bool _CheckNAN(void);	
+	void InitFreeDom(void);
+	void NodeMonitor(const int iele, const int inode, FreeDomType fd, string fn);
 	
 	template<class _Ty> bool _eleKMgenrt_N2(Matrix3<_Ty> &Me, Matrix3<_Ty> &Ke);
 	template<class _Ty> bool _Nmatrix_1d(Matrix3<_Ty> &N, Matrix3<_Ty> &Nd, Matrix1<_Ty> &gauss, Matrix1<FreeDomType> &Dof);
@@ -206,6 +244,13 @@ public:
 	template<class _Ty> void _ConstDispF(Matrix1<_Ty> &F, _Ty disp, const int nodeid, const int idof);
 	template<class _Ty> void _ConstForceF(Matrix1<_Ty> &F, _Ty disp, const int nodeid, const int idof);
 	template<class _Ty> void AssembleKM(SpMtrx<_Ty> &M, SpMtrx<_Ty> &K);
+
+	template<class _Ty> void _GenArfPrepare(_Ty dt);
+	template<class _Ty> bool _GenArfStarter(_Ty ts, _Ty dt);
+	template<class _Ty> void _GenArfTimeMarch(_Ty ts, _Ty dt);
+	template<class _Ty> void _UpdateForce(Matrix1<_Ty> &F, const _Ty t, const Matrix1<_Ty> &qt, const Matrix1<_Ty> &dqt);
+
+	template<class _Ty> void _NodeMonitor(Matrix2<_Ty> &v, const int k, const int idf, const int presc, const int width, string fn);
 };
 
 
@@ -587,4 +632,105 @@ void Beam_1D::_ConstForceF(Matrix1<_Ty> &F, _Ty disp, const int nodeid, const in
 {
 	int j = dof*(nodeid - 1) + idof;
 	F(j - 1) += disp;
+}
+
+template<class _Ty> 
+void Beam_1D::_GenArfPrepare(_Ty dt)
+{
+	GAf.InitCoef(dt);
+	GetDynQuant();
+
+	Karf_ptr->deallocate();
+	if (Ca_ptr->Nv != 0)
+		*Karf_ptr = *Ka_ptr * GAf.ck + *Ma_ptr * GAf.c0 + *Ca_ptr * GAf.c1;
+	else
+		*Karf_ptr = *Ka_ptr * GAf.ck + *Ma_ptr * GAf.c0;
+}
+
+template<class _Ty> 
+bool Beam_1D::_GenArfStarter(_Ty ts, _Ty dt)
+{	
+	GetDynQuant();
+	Qt_ptr->setvalue(0);
+	_UpdateForce(*Qt_ptr, ts, *q_ptr, *dq_ptr);
+
+	if (Ca_ptr->Nv != 0)
+		//*ddq_ptr = ((*Qt_ptr) - (*Ca_ptr)*(*dq_ptr) - (*Ka_ptr)*(*q_ptr)) / (*Ma_ptr);
+		Msolver(*Ma_ptr, *Qt_ptr - *Ca_ptr * (*dq_ptr) - *Ka_ptr * (*q_ptr), *ddq_ptr);
+	else
+		Msolver(*Ma_ptr, *Qt_ptr - *Ka_ptr * (*q_ptr), *ddq_ptr);
+		//*ddq_ptr = ((*Qt_ptr) - (*Ka_ptr)*(*q_ptr)) / (*Ma_ptr);
+	
+	return _CheckNAN();
+}
+
+template<class _Ty> 
+void Beam_1D::_UpdateForce(Matrix1<_Ty> &F, const _Ty t, const Matrix1<_Ty> &qt, const Matrix1<_Ty> &dqt)
+{
+	;
+}
+
+template<class _Ty> 
+void Beam_1D::_GenArfTimeMarch(_Ty ts, _Ty dt)
+{
+	_Ty ddt, ta;
+	Matrix1<_Ty> temp;
+	ddt = (1 - GAf.af)*dt;
+	ta = ts + ddt;
+	
+	GetDynQuant(); // ????
+	_UpdateForce(*Qt_ptr, ta, *q_ptr + *dq_ptr*ddt + *ddq_ptr*ddt*ddt*0.5, *dq_ptr + *ddq_ptr*ddt);
+	*Qt_ptr += *Ma_ptr * (*q_ptr * GAf.c0 + *dq_ptr * GAf.c2 + *ddq_ptr * GAf.c3) - *Ka_ptr * (*q_ptr) * GAf.af;
+
+	if (Ca_ptr->Nv != 0)
+		*Qt_ptr += *Ca_ptr*(*q_ptr*GAf.c1 + *dq_ptr*GAf.c4 + *ddq_ptr*GAf.c5);
+	Msolver(*Karf_ptr, *Qt_ptr, *q1_ptr);
+
+	*dq_ptr += *ddq_ptr * (1 - GAf.r) * dt;
+	*ddq_ptr = (*q1_ptr - *q_ptr) * (GAf.bt / dt / dt) - *dq_ptr * (GAf.bt / dt) + *ddq_ptr * (GAf.bt / 2.0 - GAf.r*GAf.bt + 1);
+	*dq_ptr += *ddq_ptr * GAf.r*dt;
+
+	*q_ptr = *q1_ptr;
+	if (!_CheckNAN())
+		system("pause");
+
+	GetDynQuant(); // ????
+	for (int i = 0; i < nNodeperPart; ++i)
+		for (int j = 0; j < dof; ++j)
+			p1(i, j) = p0(i, j) + (*q_ptr)(dof*i + j);
+	p_ptr = &p1;
+}
+
+template<class _Ty> 
+void Beam_1D::_NodeMonitor(Matrix2<_Ty> &v, const int k, const int ifd, const int presc, const int width, string fn)
+{
+	static int icount = 0;
+	//int presc = 6, width = presc + 2;
+	//k = BiSearch(nodeID_seq.v_p, 0, nNodeperPart - 1, nodeID(iele, inode));
+	if (k < 0) return;
+	if (icount++ < 1)
+	{
+		ofstream OutFile(fn);
+		if (!OutFile)
+		{
+			cout << fn << "open failed." << endl;
+			return;
+		}
+		OutFile << std::right << std::setw(width) << std::setprecision(presc) << std::fixed << std::showpoint;
+		OutFile << v(k, ifd) << endl;
+		OutFile.close();
+	}
+	else
+	{
+		ofstream OutFile(fn, std::ios::app);
+		if (!OutFile)
+		{
+			cout << fn << "open failed at " << icount << " times." << endl;
+			return;
+		}
+		OutFile << std::right << std::setw(width) << std::setprecision(presc) << std::fixed << std::showpoint;
+		OutFile << v(k, ifd) << endl;
+		OutFile.close();
+	}
+
 }

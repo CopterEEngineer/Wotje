@@ -2,32 +2,10 @@
 #include "BeamCSD.h"
 
 
-void ProbDefinition::GetProb(void)
-{
-	dof = 2, nbdry = 2;
-	frdtype.allocate(dof);
-	bdrytype.allocate(dof, nbdry);
-	bdryvalue.allocate(dof, nbdry);
-	bdryposition.allocate(nbdry, 2);
-
-	probtype = Mode;
-	frdtype(0) = DispPlaneIn;
-	frdtype(1) = BendPlaneIn;
-	for (int i = 0; i < dof; ++i)
-		bdrytype(i, 0) = Fix;
-	bdrytype(0, 1) = ConstForc;
-	bdryvalue(0, 1) = 1.0;
-	// each row index boundary, coloum 0: start point, column 1: end point
-	// [0, 1]
-	bdryposition(0, 0) = 0.0;
-	bdryposition(0, 1) = 0.0;
-	bdryposition(1, 0) = 1.0;
-	bdryposition(1, 1) = 1.0;
-}
 
 void ModelCase::CantileverModel(void)
 {
-	myTYPE _rho = 2.0, _E = 2.0, _iflap = 1, _A = sqrt(4*PI);
+	myTYPE _rho = 1.0, _E = 1.0, _iflap = 1, _A = sqrt(4*PI);
 
 	length = 1.0, ni = 6;
 	ristation.allocate(ni);
@@ -63,19 +41,18 @@ void ModelCase::GetProb(void)
 
 void Beam_1D::InitBeam1D(ModelCase &M)
 {
-	nEle = 23, nNodeperEle = 2, nNodeperPart = nEle*nNodeperEle - (nEle - 1);
-	nGauss = 2;
-	nodeID.allocate(nEle, nNodeperEle);
-	nodePosition.allocate(nNodeperPart);
-
+	nEle = 20, nNodeperEle = 2, nNodeperPart = nEle*nNodeperEle - (nEle - 1);
+	nGauss = 3;
+	
 	model = M;
 	dof = M.probdef.dof, nBdry = M.probdef.nbdry, ptype = M.probdef.probtype;
 	bdrytype = M.probdef.bdrytype, bdryvalue = M.probdef.bdryvalue;
 	frdtype = M.probdef.frdtype;
 	length = M.length, ristation = M.ristation;
 	MM = M.MM, DM = M.DM;
+	dt = M.probdef.dt, Nstep = M.probdef.Nstep;
 
-	q.allocate(dof*nNodeperPart), p0.allocate(nNodeperPart, dof), p1.allocate(nNodeperPart, dof);
+	_Allocate();
 
 	for (int i = 0; i < nNodeperEle; ++i)
 		nodeID(0, i) = i + 1;
@@ -97,8 +74,7 @@ void Beam_1D::InitBeam1D(ModelCase &M)
 
 	//for (int i = 0; i < nNodeperPart - 1; ++i)
 	//	nodePosition(i) = (double)(length*i) / (nNodeperPart - 1);
-	int k;
-	nodeID_seq.allocate(nNodeperPart);
+	int k;	
 	for (int i = 0; i<nNodeperEle; ++i)
 	{
 		k = i;
@@ -109,17 +85,14 @@ void Beam_1D::InitBeam1D(ModelCase &M)
 		}
 	}
 
-	nodeID_bdry.allocate(2, nBdry); // start nodeID , end nodeID
 	for (int i = 0; i < nBdry; ++i)
 	{
-		nodeID_bdry(0, i) = 1 + BiSearchRound(nodePosition.v_p, 0, nNodeperPart - 1, M.probdef.bdryposition(i, 0)*M.length);
-		nodeID_bdry(1, i) = 1 + BiSearchRound(nodePosition.v_p, 0, nNodeperPart - 1, M.probdef.bdryposition(i, 1)*M.length);
+		nodeID_bdry(0, i) = 1 + BiSearchRound(nodePosition.v_p, 0, nNodeperPart - 1, model.probdef.bdryposition(i, 0)*model.length);
+		nodeID_bdry(1, i) = 1 + BiSearchRound(nodePosition.v_p, 0, nNodeperPart - 1, model.probdef.bdryposition(i, 1)*model.length);
 	}
 
-	Fp.allocate(dof*nNodeperPart);
-	q.allocate(nNodeperPart*dof);
-	p0.allocate(nNodeperPart, dof);
-	p1.allocate(nNodeperPart, dof);
+	if (ptype == Dynamic)
+		InitFreeDom();
 
 	printf("nodeID: \n");
 	nodeID.output();
@@ -132,6 +105,20 @@ void Beam_1D::InitBeam1D(ModelCase &M)
 	printf("\n");
 }
 
+void Beam_1D::_Allocate(void)
+{
+	nodeID.allocate(nEle, nNodeperEle);
+	nodePosition.allocate(nNodeperPart);
+	nodeID_bdry.allocate(2, nBdry); // start nodeID , end nodeID
+	nodeID_seq.allocate(nNodeperPart);
+	q.allocate(dof*nNodeperPart), q1.allocate(dof*nNodeperPart), dq.allocate(dof*nNodeperPart);
+	ddq.allocate(dof*nNodeperPart), q0.allocate(dof*nNodeperPart), dq0.allocate(dof*nNodeperPart);
+	ddq0.allocate(dof*nNodeperPart);
+	p0.allocate(nNodeperPart, dof), p1.allocate(nNodeperPart, dof);
+	Fp.allocate(dof*nNodeperPart), Qt.allocate(dof*nNodeperPart);
+	GetDynQuant();
+}
+
 void Beam_1D::AssembleKM(void)
 {
 	AssembleKM(Ma, Ka);
@@ -141,7 +128,7 @@ bool Beam_1D::SetBdryCond(void)
 {
 	Matrix1<int> asub(nNodeperPart), _nodeID_bdry(2);
 	int n;
-	bool flg;
+	bool flg, flg_temp = true;
 
 	Fp.setvalue(0);
 	for (int i = 0; i < nBdry; ++i)
@@ -160,7 +147,6 @@ bool Beam_1D::SetBdryCond(void)
 				if (flg)
 					for (int w = 0; w < n; ++w)
 						_FixedDisp(Fp, asub(w), j, ptype);
-
 				break;
 			case ConstDisp:
 				if (flg)
@@ -175,24 +161,27 @@ bool Beam_1D::SetBdryCond(void)
 			default:
 				printf("Undefined Boundary Type in SetBdryCond() Func. \n");
 				return false;
+				//return;
 			}
 		}
+		flg_temp &= flg;
 	}
-	flg &= ReviseF();
+	flg_temp &= ReviseF();
 	Fp.output(4);
 
-	return flg;
+	return flg_temp;
 }
 
 bool Beam_1D::ReviseF(void)
 {
 	Matrix1<int> asub(nNodeperPart), _nodeID_bdry(2);
 	int n;
-	bool flg;
+	bool flg, flg_temp = true;
 
 	for (int i = 0; i < nBdry; ++i)
 	{
 		_nodeID_bdry = nodeID_bdry(step(0, 1), i); // i boundary start nodeID and end nodeID
+		n = 2;
 		flg = BiSearchRange(nodeID_seq.v_p, 0, nNodeperPart - 1, _nodeID_bdry.v_p, n, asub.v_p);
 		for (int j = 1; j <= dof; ++j)
 		{
@@ -201,20 +190,22 @@ bool Beam_1D::ReviseF(void)
 			case Fix:
 				if (flg)
 					for (int w = 0; w < n; ++w)
-						_FixedDispF(Fp, asub(w), i);
+						_FixedDispF(Fp, asub(w), j);
 				break;
 			case ConstDisp:
 				if (flg)
 					for (int w = 0; w < n; ++w)
-						_ConstDispF(Fp, bdryvalue(j - 1, i), asub(w), i);
+						_ConstDispF(Fp, bdryvalue(j - 1, i), asub(w), j);
 				break;
 			default:
 				printf("Undefined Boundary Type in ReviseF() Func. \n");
-				return false;
+				break;
+				//return false;
 			}
 		}
+		flg_temp &= flg;
 	}
-	return flg;
+	return flg_temp;
 }
 
 void Beam_1D::StaticSolution(void)
@@ -242,9 +233,9 @@ void Beam_1D::ModeSolution(void)
 
 	// define search range
 	ModePart.wmin = 1;
-	ModePart.wmax = 1000;
+	ModePart.wmax = 100;
 	// define mode number interested
-	ModePart.Nwmax = 40;
+	ModePart.Nwmax = 30;
 
 	double emin = ModePart.wmin*ModePart.wmin, emax = ModePart.wmax*ModePart.wmax;
 
@@ -267,3 +258,89 @@ void Beam_1D::ModeSolution(void)
 	for (int i = 0; i < ModePart.Nw; i++) cout << ModePart.wn(i) << " rad/s = " << ModePart.wn(i) / 2 / PI << " Hz " << endl;
 	ModePart.Vn.output("Vn.output", 4);
 }
+
+void Beam_1D::DynamicSolution(void)
+{
+	myTYPE t0 = 0, t;
+	int nodeMonitor = BiSearch(nodeID_seq.v_p, 0, nNodeperPart - 1, nodeID(nEle - 1, nNodeperEle - 1));
+	string fn1 = "ts_q.output";
+
+	_GenArfPrepare(dt);
+
+	if (_GenArfStarter(t0, dt))
+	{
+		for (int i = 0; i < Nstep; ++i)
+		{
+			t = t0 + i*dt;
+			ResetQt();
+			_GenArfTimeMarch(t, dt);
+
+			_NodeMonitor(p1, nodeMonitor, 0, 6, 8, fn1);
+		}
+	}
+	else
+		printf("Dynamic solving starts fail. \n");
+
+}
+
+
+void Beam_1D::GetDynQuant(void)
+{
+	Fp_ptr = &Fp;
+	Qt_ptr = &Qt;
+	q_ptr = &q;
+	q0_ptr = &q0;
+	q1_ptr = &q1;
+	dq_ptr = &dq;
+	ddq_ptr = &ddq;
+	dq0_ptr = &dq0;
+	ddq0_ptr = &ddq0;
+	Ka_ptr = &Ka;
+	Ma_ptr = &Ma;
+	Ca_ptr = &Ca;
+	Karf_ptr = &Karf;
+	//p_ptr = &p;
+}
+
+void Beam_1D::ResetQt(void)
+{
+	GetDynQuant();
+	*Qt_ptr = *Fp_ptr;
+	//Qt_ptr->setvalue(0);
+}
+
+bool Beam_1D::_CheckNAN(void)
+{
+	int *id;
+	int nNAN;
+	bool flg = true;
+	id = new int[dof*nNodeperPart];
+
+	nNAN = CheckNAN(q_ptr->v_p, 0, q_ptr->Nv, id);
+	if (nNAN > -1)
+	{
+		flg &= false;
+		for (int i = 0; i < nNAN + 1; ++i)
+			printf("q(%d) is NAN. \n", id[i]);
+	}
+
+	nNAN = CheckNAN(dq_ptr->v_p, 0, dq_ptr->Nv, id);
+	if (nNAN > -1)
+	{
+		flg &= false;
+		for (int i = 0; i < nNAN + 1; ++i)
+			printf("dq(%d) is NAN. \n", id[i]);
+	}
+
+	nNAN = CheckNAN(ddq_ptr->v_p, 0, ddq_ptr->Nv, id);
+	if (nNAN > -1)
+	{
+		flg &= false;
+		for (int i = 0; i < nNAN + 1; ++i)
+			printf("ddq(%d) is NAN. \n", id[i]);
+	}
+	delete[] id;
+	return flg;
+}
+
+

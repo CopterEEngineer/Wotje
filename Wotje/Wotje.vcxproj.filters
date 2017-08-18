@@ -33,7 +33,7 @@
     <ClInclude Include="BeamCSD.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="ModelCase.h">
+    <ClInclude Include="SimCase.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -50,7 +50,7 @@
     <ClCompile Include="BeamCSD.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ModelCase.cpp">
+    <ClCompile Include="SimCase.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>

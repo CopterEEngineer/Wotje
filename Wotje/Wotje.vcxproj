@@ -151,14 +151,14 @@
     <ClInclude Include="Algorithm.h" />
     <ClInclude Include="BeamCSD.h" />
     <ClInclude Include="MatrixTemplate.h" />
-    <ClInclude Include="ModelCase.h" />
+    <ClInclude Include="SimCase.h" />
     <ClInclude Include="stdafx.h" />
     <ClInclude Include="targetver.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Algorithm.cpp" />
     <ClCompile Include="BeamCSD.cpp" />
-    <ClCompile Include="ModelCase.cpp" />
+    <ClCompile Include="SimCase.cpp" />
     <ClCompile Include="stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Create</PrecompiledHeader>
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>

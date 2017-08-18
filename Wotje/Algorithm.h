@@ -675,5 +675,14 @@ void Msolver(float *A, float *b, const int n, const int nrhs = 1);
 void SolveSpEig(SpMtrx<double> &K, SpMtrx<double> &M, Matrix1<double> &lam, Matrix2<double> &Vn, int Nwmax, double emin, double emax, int &Nw);
 
 
+template<class _Ty>
+int CheckNAN(_Ty a[], int b, int e, int id[])
+{
+	int icount = -1;
+	for (int i = b; i < e; ++i)
+		if (isnan(a[i]))
+			id[++icount] = i;					
+	return icount;
+}
 
 #endif // !Algorithm_h
